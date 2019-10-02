@@ -1,4 +1,4 @@
-import { source, asyncExtendedIterable } from "iterable";
+import { asyncExtendedIterable } from "iterable";
 import { ok } from "assert";
 
 const left = [1, 3, 5, 8, 9];
@@ -23,57 +23,8 @@ function producers(): AsyncIterable<number>[] {
   const middle = [4, 6, 7];
   const right = [0, 2];
   const sequences = [left, middle, right];
-
-  const iterator = cycle()[Symbol.asyncIterator]();
-
-  const targets = sequences.map((numbers, index) => {
-    const target = source<number>(sourceCycle);
-    target.hold();
-    return target;
-
-    // This will drain the iterator for the next value, or done
-    async function sourceCycle(): Promise<number> {
-      const next = await iterator.next();
-      if (next.done) {
-        return undefined;
-      }
-      if (next.value.index === index) {
-        console.log("Received!", next.value.number);
-        return next.value.number;
-      } else {
-        console.log("Pushed!", next.value.number);
-        targets[next.value.index].push(next.value.number);
-        return sourceCycle();
-      }
-    }
-  });
-
-  return targets.map(target => asyncExtendedIterable(target).filter(value => typeof value === "number").toIterable());
-
-  async function *cycle(): AsyncIterable<{ index: number, number: number }> {
-    const trackingNumbers: number[] = left.concat(middle).concat(right).sort((a, b) => a < b ? -1 : 1);
-    const trackingSequences: number[][] = sequences.map(sequence => sequence.slice());
-    let number: number;
-    do {
-      number = trackingNumbers.shift();
-      ok(typeof number === "number");
-      const matchingSequenceIndex = trackingSequences.findIndex(sequence => sequence.includes(number));
-      if (matchingSequenceIndex === -1) {
-        // Complete
-        return;
-      }
-      ok(trackingSequences[matchingSequenceIndex][0] === number, "Expected sequences to be in order");
-      ok(targets[matchingSequenceIndex]);
-      // Can no longer be used
-      trackingSequences[matchingSequenceIndex].shift();
-      console.log("Yield", { index: matchingSequenceIndex, number });
-      yield { index: matchingSequenceIndex, number };
-      // We will no longer produce a value for this target
-      if (trackingSequences[matchingSequenceIndex].length === 0) {
-        targets[matchingSequenceIndex].close();
-      }
-    } while (trackingNumbers.length);
-  }
+  const source = asyncExtendedIterable(left.concat(middle).concat(right).sort((a, b) => a < b ? -1 : 1));
+  return sequences.map(sequence => source.filter(value => sequence.includes(value)).toIterable());
 }
 
 const updates = producers();
