@@ -14,9 +14,9 @@ Each layer will contain for each `AsyncIterable` found, in the order they were f
 
 As an initial example we can have two `AsyncIterable` instances that produce a single value each:
 
-```ts
+```js
 import { asyncIterable, asyncExtendedIterable } from "iterable";
-import { merge } from "../merge";
+import { merge } from "@opennetwork/progressive-merge";
 
 const left = asyncIterable([1]);
 const right = asyncIterable([2]);
@@ -25,7 +25,7 @@ const producers = asyncIterable([left, right]);
 
 log(merge(producers, undefined)).catch(console.error);
 
-function log(merged: AsyncIterable<AsyncIterable<number>>) {
+function log(merged) {
   return asyncExtendedIterable(merged)
     .map(layer => asyncExtendedIterable(layer).toArray())
     .toArray()
