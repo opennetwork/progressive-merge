@@ -111,6 +111,8 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
       laneIteratorStates.set(iterator, result);
 
       // When we get a finished iterator, we need to loop around again
+      // TODO we could finish the rest of the loop for a complete iterator, but adds a little more complexity
+      // instead we will produce a new layer and next loop we continue as normal
       if (result.done) {
         const currentIndex = currentIterators.indexOf(iterator);
         currentIterators[currentIndex] = undefined;
