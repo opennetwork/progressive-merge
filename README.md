@@ -67,7 +67,7 @@ This will produce the output:
 ]
 ```
 
-This gives us the information required to be able to reconstruct what each layer for our use cases
+This gives us the information required to be able to reconstruct what each layer looks like.
 
 Each use case is different, so the merge only provides what's needing to be known. Some use cases
 may retain previously seen values for that iterables index, or it may ignore the value at that index for future iterations
