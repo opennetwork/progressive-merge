@@ -1,61 +1,89 @@
 # Progressive Merge
 
-Aim is to merge a growing list of values that can be loading in parallel with different resolution 
-times
+Aim is to merge a growing list of values that can be loading in parallel with different resolution times
 
-## Example
+The `merge` function exported from this module accepts an [`AsyncIterable`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/asyncIterator)
+which produces zero or more `AsyncIterable` instances that produce the values we want to see in our merge
 
-We have three iterables, with each producing a number, if we were to represent them as arrays
-they would look like this:
+The merging `AsyncIterable` will produce a new iteration each time it has a new layer to be consumed
 
-```js
-const left = [1, 3, 5, 8, 9];
-const middle = [4, 6, 7];
-const right = [0, 2];
-```
+Each layer will contain for each `AsyncIterable` found, in the order they were found:
 
-We would expect the merge to result in an iterable that looks like this:
+- The value given as the second argument to `merge`, representing an empty state, this means we haven't yet seen a value yet for this iterable
+- An [`IteratorResult`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols#The_iterator_protocol) for that iterable
 
-```js
-const mergedLayers = [
-  [undefined, undefined, 0],
-  [1, undefined, 0],
-  [1, undefined, 2],
-  [3, undefined, 2],
-  [3, 4, 2],
-  [3, 4], // <- "right" is now in a done state, so it will not appear in future layers
-  [5, 4],
-  [5, 6],
-  [5, 7],
-  [8, 7], // <- "middle" is now in a done state, so it will not appear in a future layer
-  [8],
-  [9] // <- "left" is now in a done state, along with all other iterables, meaning the merge is complete
-];
-```
-
-In the example the iterables can only return their value if the previous value has been returned
-
-A consumer of this merge can skip ahead in layers if it wants to see whats next, each layer is separated from the next as it is possible
-for a consumer to cache these values in its own way, which gives better observability as to whats happening within
-
-We need to be able to document the generation behaviour in code, this will give us a solid foundation to reference
-when developing this behaviour
-
-Here is what I used to produce a consistent sequence:
+As an initial example we can have two `AsyncIterable` instances that produce a single value each:
 
 ```ts
-import { asyncExtendedIterable } from "iterable";
+import { asyncIterable, asyncExtendedIterable } from "iterable";
+import { merge } from "../merge";
 
-function producers(): AsyncIterable<number>[] {
-  const left = [1, 3, 5, 8, 9];
-  const middle = [4, 6, 7];
-  const right = [0, 2];
-  const sequences = [left, middle, right];
-  const source = asyncExtendedIterable(left.concat(middle).concat(right).sort((a, b) => a < b ? -1 : 1));
-  return sequences.map(sequence => source.filter(value => sequence.includes(value)).toIterable());
+const left = asyncIterable([1]);
+const right = asyncIterable([2]);
+
+const producers = asyncIterable([left, right]);
+
+log(merge(producers, undefined)).catch(console.error);
+
+function log(merged: AsyncIterable<AsyncIterable<number>>) {
+  return asyncExtendedIterable(merged)
+    .map(layer => asyncExtendedIterable(layer).toArray())
+    .toArray()
+    .then(result => console.log(JSON.stringify(result, undefined, "  ")));
 }
 ```
 
+This will produce the output:
 
+```json
+[
+  [
+    {
+      "value": 1,
+      "done": false
+    },
+    {
+      "value": 2,
+      "done": false
+    }
+  ],
+  [
+    {
+      "done": true
+    },
+    {
+      "value": 2,
+      "done": false
+    }
+  ],
+  [
+    {
+      "done": true
+    },
+    {
+      "done": true
+    }
+  ]
+]
+```
+
+This gives us the information required to be able to reconstruct what each layer for our use cases
+
+Each use case is different, so the merge only provides what's needing to be known. Some use cases
+may retain previously seen values for that iterables index, or it may ignore the value at that index for future iterations
+
+The goal of this merge is not to _do_ the merge, but to give you information about the state of the merge
+
+## Laziness 
+
+The merge is operating in a lazy manner, if the external iterables aren't utilised, then no processing will be done internally,
+this means we may have pending state waiting for the next iteration.
+
+Internally a set of promises are held for each known iterable, including the primary iterable that was provided.
+
+These promises may produce an error, which can result in all other promises being forgotten about, which can result in an 
+uncaught error. Because of this the consumer of `merge` can pass a third argument with a callback that will be invoked
+with each promise that is utilised within the `merge` function, this allows the consumer to settle this promises as they
+see fit.
 
 

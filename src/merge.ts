@@ -1,4 +1,5 @@
 export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty: E, onPromise?: (promise: Promise<unknown>) => void, onAllIterators?: () => void): AsyncIterable<AsyncIterable<IteratorResult<T> | E>> {
+
   // We need to be able to keep track on what we're waiting for, and what we know
   // These are weak because we can remove the reference in currentIterators, when we don't have a reference
   // any more it means that our state is { done: true }
@@ -235,6 +236,8 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
 
         // Record that we have a promise for this iterator
         lanePromises.set(iterator, promise);
+
+        return promise;
       });
 
     // Only if we have an iterator to get result for will we wait for a new result,
@@ -284,8 +287,6 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
       return racePromise;
     })();
 
-
   }
-
 
 }

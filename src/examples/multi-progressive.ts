@@ -1,6 +1,6 @@
-import { asyncIterable, source } from "iterable";
+import { asyncExtendedIterable, asyncIterable, source } from "iterable";
 import { ok } from "assert";
-import { merge } from "./merge";
+import { merge } from "../merge";
 
 const left = [1, 3, 5, 8, 9];
 const middle = [4, 6, 7];
