@@ -1,4 +1,4 @@
-export async function *merge<T>(lanes: AsyncIterable<AsyncIterable<T>>): AsyncIterable<AsyncIterable<T | undefined>> {
+export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty: E, signalAllIterators: () => void): AsyncIterable<AsyncIterable<IteratorResult<T> | E>> {
   type IteratorValue = [AsyncIterator<T>, IteratorResult<T>];
 
   const lanePromises = new WeakMap<AsyncIterator<T>, Promise<IteratorResult<T>>>();
@@ -9,16 +9,92 @@ export async function *merge<T>(lanes: AsyncIterable<AsyncIterable<T>>): AsyncIt
 
   let currentIterators: AsyncIterator<T>[] = [];
 
+  const pending: IteratorValue[] = [];
+
   let allLanes = false;
 
   do {
     yield values(currentIterators);
-  } while (!allLanes || currentIterators.length);
+  } while (!allLanes || currentIterators.filter(iterator => !!iterator).length || pending.length);
 
-  async function *values(iterators: AsyncIterator<T>[]): AsyncIterable<T | undefined> {
+  // Notification of complete
+  if (currentIterators.length) {
+    yield yieldValues(currentIterators, -1, currentIterators.length - 1);
+  }
+
+  async function *yieldValues(iterators: AsyncIterator<T>[], currentYieldedIndex: number, yieldingIndex: number): AsyncIterable<IteratorResult<T> | E> {
+    let currentTrackingYieldedIndex = currentYieldedIndex;
+    do {
+      const nextIndex = currentTrackingYieldedIndex += 1;
+      const nextIterator = iterators[nextIndex];
+      if (!nextIterator) {
+        // If the next iterator is undefined, it means it was completed
+        yield { done: true, value: undefined };
+      } else {
+        const nextIteratorState = laneIteratorStates.get(nextIterator);
+        if (!nextIteratorState) {
+          yield empty;
+        } else {
+          yield nextIteratorState;
+        }
+      }
+    } while (currentTrackingYieldedIndex < yieldingIndex);
+  }
+
+  async function *values(iterators: AsyncIterator<T>[]): AsyncIterable<IteratorResult<T> | E> {
     const trackingIterators = iterators.slice();
     let currentYieldedIndex = -1;
     do {
+      const nextResult = await getNextResult();
+
+      if (!nextResult) {
+        if (currentYieldedIndex === -1) {
+          // Restart
+          return yield* values(currentIterators);
+        }
+        return; // Signal to loop externally
+      }
+
+      const [iterator, result] = nextResult;
+
+      const index = trackingIterators.indexOf(iterator);
+
+      console.log({ result, index });
+
+      lanePromises.set(iterator, undefined);
+      laneIteratorStates.set(iterator, result);
+
+      // Starting again in the next layer
+      if (index === -1) {
+        pending.push([iterator, result]);
+        return;
+      }
+
+      // When we get a finished iterator, we start a new track
+      if (result.done) {
+        const currentIndex = currentIterators.indexOf(iterator);
+        currentIterators[currentIndex] = undefined;
+        return;
+      }
+
+      // Remove from our remaining iterators for this layer, we can no longer accept a value for it
+      trackingIterators.splice(0, index + 1);
+
+      const yieldingIndex = iterators.indexOf(iterator);
+      yield* yieldValues(iterators, currentYieldedIndex, yieldingIndex);
+      currentYieldedIndex = yieldingIndex;
+    } while (trackingIterators.length);
+
+    if (currentYieldedIndex < (iterators.length - 1)) {
+      yield* yieldValues(iterators, currentYieldedIndex, iterators.length - 1);
+    }
+
+    async function getNextResult(): Promise<IteratorValue> {
+
+      if (pending.length) {
+        return pending.shift();
+      }
+
       if (!allLanes && !nextLanePromise) {
         nextLanePromise = laneIterator.next();
       }
@@ -35,81 +111,43 @@ export async function *merge<T>(lanes: AsyncIterable<AsyncIterable<T>>): AsyncIt
         promises.push(resultsPromise.then(() => false));
       }
 
-      // console.log(promises);
-
       if (!promises.length) {
-        return; // Nothing more to do
+        return undefined; // Nothing more to do
       }
 
       const isNext = await Promise.race(promises);
-
-      // console.log({ isNext });
 
       if (isNext) {
         const nextLane = await nextLanePromise;
         nextLanePromise = undefined;
         if (nextLane.done) {
           allLanes = true;
-          // console.log("Continue", trackingIterators.length);
-          continue;
+          if (signalAllIterators) {
+            signalAllIterators();
+          }
+          return getNextResult();
         } else {
           currentIterators = currentIterators.concat(nextLane.value[Symbol.asyncIterator]());
-          // console.log("Return");
-          return;
+          return undefined;
         }
       }
 
-      const [iterator, result] = await resultsPromise;
-      const index = trackingIterators.indexOf(iterator);
-
-      lanePromises.set(iterator, undefined);
-      laneIteratorStates.set(iterator, result);
-
-      // console.log(index, result);
-
-      // Starting again in the next layer
-      if (index === -1) {
-        return;
-      }
-
-      // When we get a finished iterator, we start a new track
-      if (result.done) {
-        const currentIndex = currentIterators.indexOf(iterator);
-        currentIterators.splice(currentIndex, 1);
-        return;
-      }
-
-      // Remove from our remaining iterators for this layer, we can no longer accept a value for it
-      trackingIterators.splice(0, index + 1);
-
-      const yieldingIndex = iterators.indexOf(iterator);
-
-      // Bring up to speed on where we are in our values
-      do {
-        const nextIndex = currentYieldedIndex += 1;
-        const nextIterator = iterators[nextIndex];
-        const nextIteratorState = laneIteratorStates.get(nextIterator);
-        // Nothing in this layer
-        if (!nextIteratorState || nextIteratorState.done) {
-          continue;
-        }
-        yield nextIteratorState ? nextIteratorState.value : undefined;
-      } while (currentYieldedIndex < yieldingIndex);
-    } while (trackingIterators.length);
+      console.log("Results");
+      return resultsPromise;
+    }
   }
 
   function iteratorResults(iterators: AsyncIterator<T>[]): Promise<IteratorValue> {
-    const promises = iterators.map(iterator => {
-      let promise = lanePromises.get(iterator);
-      if (!promise) {
-        promise = iterator.next();
-        // console.log("New promise");
-        promise.then(result => console.log({ result })).catch(error => console.error(error));
-        lanePromises.set(iterator, promise);
-      }
-      return promise.then((result): IteratorValue => [iterator, result]);
-    });
-    // console.log(promises);
+    const promises = iterators
+      .filter(iterator => !!iterator)
+      .map(iterator => {
+        let promise = lanePromises.get(iterator);
+        if (!promise) {
+          promise = iterator.next();
+          lanePromises.set(iterator, promise);
+        }
+        return promise.then((result): IteratorValue => [iterator, result]);
+      });
     return Promise.race(promises);
   }
 

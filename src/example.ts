@@ -39,32 +39,35 @@ async function run() {
 
   let layers = 0;
 
-  const layerValues: number[][] = [];
+  type Layer = (IteratorResult<number> | undefined)[];
 
-  for await (const layer of merge(asyncIterable(targets))) {
+  const layerValues: Layer[] = [];
+
+  for await (const layer of merge(asyncIterable(targets), undefined, () => pushNext([]))) {
     layers += 1;
-    // console.log("Layer", layer);
-    const currentLayer = [];
+    const currentLayer: Layer = [];
     for await (const value of layer) {
       currentLayer.push(value);
-      pushNext();
+      pushNext(currentLayer);
     }
-    if (currentLayer.length) {
-      layerValues.push(currentLayer);
+    layerValues.push(currentLayer);
+    if (layerValues.length >= 3) {
+      pushNext(currentLayer);
     }
-    // We have our layers set up ready to roll
-    if (layers === targets.length) {
-      pushNext();
-    }
-    // console.log(targets);
   }
 
   console.log(JSON.stringify(layerValues));
 
-  function pushNext() {
-    const nextValue = currentValue += 1;
+  function pushNext(currentLayer: Layer) {
+    const nextValue = currentValue + 1;
+    if (!currentLayer.length && currentValue > -1) {
+      return;
+    }
+    const includesNext = currentLayer.find(value => value && value.value === (nextValue - 1));
+    if (currentLayer.length && !includesNext) {
+      return;
+    }
     const sourceIndex = sources.findIndex(source => source.includes(nextValue));
-    console.log({ nextValue, sourceIndex, sources });
     if (sourceIndex === -1) {
       targets.forEach(target => target.close());
       return;
@@ -73,8 +76,9 @@ async function run() {
     ok(source[0] === nextValue);
     source.splice(0, 1);
     const target = targets[sourceIndex];
+    currentValue = nextValue;
     target.push(nextValue);
-    console.log(source.length, target);
+    // console.log(source.length, target);
     if (source.length === 0) {
       target.close();
     }
