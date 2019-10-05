@@ -6,6 +6,7 @@
   "types": "./dist/index.d.ts",
   "type": "module",
   "license": "MIT",
+  "description": "Merge a growing list of values that can be loading in parallel with different resolution times",
   "scripts": {
     "build": "rm -rf dist && tsc --declaration && npm run tslint && node correct-import-extensions.js",
     "watch": "tsc -w",
