@@ -1,4 +1,4 @@
-export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty: E, onPromise?: (promise: Promise<void>) => void, signalAllIterators?: () => void): AsyncIterable<AsyncIterable<IteratorResult<T> | E>> {
+export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty: E, onPromise?: (promise: Promise<unknown>) => void, onAllIterators?: () => void): AsyncIterable<AsyncIterable<IteratorResult<T> | E>> {
   type IteratorValue = [AsyncIterator<T>, IteratorResult<T>];
 
   const lanePromises = new WeakMap<AsyncIterator<T>, Promise<IteratorResult<T>>>();
@@ -115,8 +115,8 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
         nextLanePromise = undefined;
         if (nextLane.done) {
           allLanes = true;
-          if (signalAllIterators) {
-            signalAllIterators();
+          if (onAllIterators) {
+            onAllIterators();
           }
           return getNextResult();
         } else {
@@ -137,7 +137,7 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
         if (!promise) {
           promise = iterator.next();
           if (onPromise) {
-            onPromise(promise.then(() => {}));
+            onPromise(promise);
           }
           lanePromises.set(iterator, promise);
         }
