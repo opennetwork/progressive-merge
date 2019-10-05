@@ -83,7 +83,7 @@ Internally a set of promises are held for each known iterable, including the pri
 
 These promises may produce an error, which can result in all other promises being forgotten about, which can result in an 
 uncaught error. Because of this the consumer of `merge` can pass a third argument with a callback that will be invoked
-with each promise that is utilised within the `merge` function, this allows the consumer to settle this promises as they
+with each promise that is utilised within the `merge` function, this allows the consumer to settle these promises as they
 see fit.
 
 
