@@ -2,7 +2,9 @@
   "name": "@opennetwork/progressive-merge",
   "version": "1.0.1",
   "main": "./dist/index.js",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "type": "module",
   "license": "MIT",
   "scripts": {
     "build": "rm -rf dist && tsc --declaration && npm run tslint && node correct-import-extensions.js",
@@ -12,14 +14,13 @@
   },
   "peerDependencies": {},
   "dependencies": {
-    "@opennetwork/linked-list": "^1.0.3",
-    "iterable": "^5.6.0"
   },
   "repository": {
     "type": "git",
     "url": "https://github.com/opennetwork/progressive-merge.git"
   },
   "devDependencies": {
+    "iterable": "^5.6.0",
     "@types/node": "^12.7.8",
     "esm": "^3.2.25",
     "filehound": "^1.17.3",
