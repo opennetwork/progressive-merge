@@ -1,4 +1,4 @@
-export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty: E, signalAllIterators: () => void): AsyncIterable<AsyncIterable<IteratorResult<T> | E>> {
+export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty: E, onPromise?: (promise: Promise<void>) => void, signalAllIterators?: () => void): AsyncIterable<AsyncIterable<IteratorResult<T> | E>> {
   type IteratorValue = [AsyncIterator<T>, IteratorResult<T>];
 
   const lanePromises = new WeakMap<AsyncIterator<T>, Promise<IteratorResult<T>>>();
@@ -16,11 +16,6 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
   do {
     yield values(currentIterators);
   } while (!allLanes || currentIterators.filter(iterator => !!iterator).length || pending.length);
-
-  // Notification of complete
-  if (currentIterators.length) {
-    yield yieldValues(currentIterators, -1, currentIterators.length - 1);
-  }
 
   async function *yieldValues(iterators: AsyncIterator<T>[], currentYieldedIndex: number, yieldingIndex: number): AsyncIterable<IteratorResult<T> | E> {
     let currentTrackingYieldedIndex = currentYieldedIndex;
@@ -52,14 +47,12 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
           // Restart
           return yield* values(currentIterators);
         }
-        return; // Signal to loop externally
+        break;
       }
 
       const [iterator, result] = nextResult;
 
       const index = trackingIterators.indexOf(iterator);
-
-      console.log({ result, index });
 
       lanePromises.set(iterator, undefined);
       laneIteratorStates.set(iterator, result);
@@ -67,14 +60,14 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
       // Starting again in the next layer
       if (index === -1) {
         pending.push([iterator, result]);
-        return;
+        break;
       }
 
       // When we get a finished iterator, we start a new track
       if (result.done) {
         const currentIndex = currentIterators.indexOf(iterator);
         currentIterators[currentIndex] = undefined;
-        return;
+        break;
       }
 
       // Remove from our remaining iterators for this layer, we can no longer accept a value for it
@@ -132,7 +125,6 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
         }
       }
 
-      console.log("Results");
       return resultsPromise;
     }
   }
@@ -144,6 +136,9 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
         let promise = lanePromises.get(iterator);
         if (!promise) {
           promise = iterator.next();
+          if (onPromise) {
+            onPromise(promise.then(() => {}));
+          }
           lanePromises.set(iterator, promise);
         }
         return promise.then((result): IteratorValue => [iterator, result]);

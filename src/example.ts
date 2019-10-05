@@ -43,7 +43,7 @@ async function run() {
 
   const layerValues: Layer[] = [];
 
-  for await (const layer of merge(asyncIterable(targets), undefined, () => pushNext([]))) {
+  for await (const layer of merge(asyncIterable(targets), undefined, undefined, () => pushNext([]))) {
     layers += 1;
     const currentLayer: Layer = [];
     for await (const value of layer) {
