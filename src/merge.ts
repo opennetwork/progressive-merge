@@ -83,6 +83,10 @@ export async function *merge<T, E>(lanes: AsyncIterable<AsyncIterable<T>>, empty
       const nextResult = await getNextResult();
 
       if (!nextResult) {
+        // If we have no iterators, and no result, it means we have nothing to do ever
+        if (iterators.length === 0) {
+          break;
+        }
         if (currentYieldedIndex === -1) {
           // We can restart because we never saw a value before
           // This can only happen for !nextResult because all other instances we would of had some change to the state
