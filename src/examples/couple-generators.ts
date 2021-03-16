@@ -1,4 +1,5 @@
 import { merge } from "../merge";
+import { latest } from "../latest";
 
 async function doTask(maxInterval = 1000) {
   // Do some task for given time
@@ -7,7 +8,7 @@ async function doTask(maxInterval = 1000) {
 }
 
 async function *doTasks(maxCount = 100, task: () => Promise<void>) {
-  let tasksRemaining = Math.round(Math.random() * maxCount);
+  let tasksRemaining = 1 + Math.floor(Math.random() * maxCount);
   do {
     tasksRemaining -= 1;
     const start = Date.now();
@@ -35,7 +36,7 @@ async function *secondary() {
 }
 
 async function run() {
-  for await (const slice of merge([primary(), secondary()])) {
+  for await (const slice of latest(merge([primary(), secondary()]))) {
     console.log(slice);
   }
 }
