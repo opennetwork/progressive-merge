@@ -30,8 +30,7 @@ export interface MergeOptions<T> {
   collector?: MergeCollector<T> | MergeCollectorOptions<T>;
 }
 
-export async function *merge<T>(lanes: AsyncIterable<AsyncIterable<T>>, options: MergeOptions<T> = {}): AsyncIterable<ReadonlyArray<IteratorResult<T> | undefined>> {
-
+export async function *merge<T>(lanes: AsyncIterable<AsyncIterable<T>> | Iterable<AsyncIterable<T>>, options: MergeOptions<T> = {}): AsyncIterable<ReadonlyArray<IteratorResult<T> | undefined>> {
   const collector = createCollector();
   const generatePromise = generate();
 
@@ -52,7 +51,7 @@ export async function *merge<T>(lanes: AsyncIterable<AsyncIterable<T>>, options:
       const slice = lastSlice();
 
       if (typeof laneCount === "number" && slice.length === laneCount) {
-        const allDone = slice.every(result => result.done);
+        const allDone = slice.every(result => result && result.done);
         if (allDone) {
           collector.close();
           break;
@@ -103,10 +102,14 @@ export async function *merge<T>(lanes: AsyncIterable<AsyncIterable<T>>, options:
     receivedError = receivedError ?? error ?? new Error("Promise rejected with no error");
   }
 
+  async function *asyncLanes() {
+    yield *lanes;
+  }
+
   async function generate() {
     let index = -1;
     const promises: Promise<void>[] = [];
-    for await (const lane of lanes) {
+    for await (const lane of asyncLanes()) {
       index += 1;
       const promise = generateLane(lane, index);
       if (options.onComplete) {
