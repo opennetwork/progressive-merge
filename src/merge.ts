@@ -45,21 +45,15 @@ export async function *merge<T>(lanes: AsyncIterable<AsyncIterable<T>> | Iterabl
       if (receivedError) {
         await Promise.reject(receivedError);
       }
-
-      yield *processBatch(batch);
-
-      const slice = lastSlice();
-
-      if (typeof laneCount === "number" && slice.length === laneCount) {
-        const allDone = slice.every(result => result && result.done);
-        if (allDone) {
-          collector.close();
-          break;
+      for (const slice of processBatch(batch)) {
+        if (typeof laneCount === "number" && slice.length === laneCount) {
+          const allDone = slice.every(result => result && result.done);
+          if (allDone) {
+            collector.close();
+          }
         }
+        yield slice;
       }
-
-      // Reset slices
-      slices = [slice];
     }
   } finally {
     await generatePromise;
@@ -90,6 +84,7 @@ export async function *merge<T>(lanes: AsyncIterable<AsyncIterable<T>> | Iterabl
     if (options.onBatchComplete) {
       options.onBatchComplete(Object.freeze([...slices]));
     }
+    slices = [lastSlice()];
 
     function pushSlice() {
       const results = Object.freeze(nextResults);

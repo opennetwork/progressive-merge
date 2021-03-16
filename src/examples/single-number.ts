@@ -1,5 +1,6 @@
 import { asyncIterable, asyncExtendedIterable } from "iterable";
 import { merge } from "../merge";
+import { latest } from "../latest";
 
 const left = asyncIterable([1, 2, 3, 4]);
 const right = asyncIterable([5, 6, 7, 8]);
@@ -27,8 +28,8 @@ log(merge(producers, {
   }
 })).catch(console.error);
 
-function log(merged: AsyncIterable<Iterable<IteratorResult<number> | undefined>>) {
-  return asyncExtendedIterable(merged)
+function log(merged: AsyncIterable<ReadonlyArray<IteratorResult<number> | undefined>>) {
+  return asyncExtendedIterable(latest(merged))
     .toArray()
     .then(result => console.log(JSON.stringify(result, undefined, "  ")));
 }
