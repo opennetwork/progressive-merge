@@ -1,4 +1,10 @@
-import { QueueMicrotask, defaultQueueMicrotask, newQueueIfExists, shiftingQueueMicrotask } from "./microtask";
+import {
+  QueueMicrotask,
+  defaultQueueMicrotask,
+  newQueueIfExists,
+  shiftingQueueMicrotask,
+  resetQueueIfExists
+} from "./microtask";
 import { batchIterators } from "./batch";
 
 
@@ -18,6 +24,9 @@ interface ResultSet<T> {
 
 export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOptions<T> = {}): AsyncIterable<ReadonlyArray<T | undefined>> {
   const microtask: QueueMicrotask = options.queueMicrotask || shiftingQueueMicrotask();
+  const queues: QueueMicrotask[] = [
+    microtask
+  ];
   const laneTask = batchIterators(microtask, mapLanes());
   let lanes: Lane<T>[] = [];
   let lanesDone = false;
@@ -25,9 +34,9 @@ export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOpti
   const laneValues = new WeakMap<Lane<T>, T>();
   do {
     const { updated, results } = await next();
-    if (updated) {
-      yield results;
-    }
+    if (!updated) continue;
+    yield results;
+    queues.forEach(resetQueueIfExists);
   } while (!isDone());
 
   async function next() {
@@ -92,7 +101,11 @@ export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOpti
 
   async function *mapLanes() {
     for await (const lane of asAsync(iterables)) {
-      yield batchIterators(newQueueIfExists(microtask), asAsync(lane), 1);
+      const queue = newQueueIfExists(microtask);
+      if (queue !== microtask) {
+        queues.push(queue);
+      }
+      yield batchIterators(queue, asAsync(lane), 1);
     }
   }
 
