@@ -23,14 +23,7 @@ export function shiftingQueueMicrotask(macrotaskLimit = 5): QueueMicrotask {
     [RESET_QUEUE]?: unknown
   } = (fn) => {
     if (thisMacrotask >= macrotaskLimit) {
-      const initial = macrotaskLimit;
-      setImmediate(() => {
-        // Only reset it once, we may have a few callbacks at once.
-        if (macrotaskLimit === initial) {
-          macrotaskLimit = 0;
-        }
-        fn();
-      });
+      setImmediate(fn);
     } else {
       thisMacrotask += 1;
       queueMicrotask(fn);
