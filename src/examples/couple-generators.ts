@@ -1,5 +1,4 @@
 import { merge } from "../merge";
-import { latest } from "../latest";
 
 async function doTask(maxInterval = 1000) {
   // Do some task for given time

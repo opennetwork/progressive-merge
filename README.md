@@ -1,89 +1,31 @@
 # Progressive Merge
 
-Aim is to merge a growing list of values that can be loading in parallel with different resolution times
+Take a set of async iterations and turn them into an array of the latest values for that iterator. 
 
-The `merge` function exported from this module accepts an [`AsyncIterable`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Symbol/asyncIterator)
-which produces zero or more `AsyncIterable` instances that produce the values we want to see in our merge
+This is the general function signature to achieve this:
 
-The merging `AsyncIterable` will produce a new iteration each time it has a new layer to be consumed
+```typescript
+export async function *merge<T>(iterables: AsyncIterable<AsyncIterable<T>>): AsyncIterable<ReadonlyArray<T | undefined>> {
+```
 
-Each layer will contain for each `AsyncIterable` found, in the order they were found:
+This allows us to take multiple functions producing values and group an update set together.
 
-- The value given as the second argument to `merge`, representing an empty state, this means we haven't yet seen a value yet for this iterable
-- An [`IteratorResult`](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Iteration_protocols#The_iterator_protocol) for that iterable
-
-As an initial example we can have two `AsyncIterable` instances that produce a single value each:
-
-```js
-import { asyncIterable, asyncExtendedIterable } from "iterable";
+```typescript
 import { merge } from "@opennetwork/progressive-merge";
 
-const left = asyncIterable([1]);
-const right = asyncIterable([2]);
-
-const producers = asyncIterable([left, right]);
-
-log(merge(producers, undefined)).catch(console.error);
-
-function log(merged) {
-  return asyncExtendedIterable(merged)
-    .map(layer => asyncExtendedIterable(layer).toArray())
-    .toArray()
-    .then(result => console.log(JSON.stringify(result, undefined, "  ")));
+for await (const set of merge([[1, 2, 3, 4], [5, 6, 7, 8, 9]])) {
+    console.log(set);
 }
 ```
 
-This will produce the output:
+The above logs:
 
-```json
-[
-  [
-    {
-      "value": 1,
-      "done": false
-    },
-    {
-      "value": 2,
-      "done": false
-    }
-  ],
-  [
-    {
-      "done": true
-    },
-    {
-      "value": 2,
-      "done": false
-    }
-  ],
-  [
-    {
-      "done": true
-    },
-    {
-      "done": true
-    }
-  ]
-]
 ```
-
-This gives us the information required to be able to reconstruct what each layer looks like.
-
-Each use case is different, so the merge only provides what's needing to be known. Some use cases
-may retain previously seen values for that iterables index, or it may ignore the value at that index for future iterations
-
-The goal of this merge is not to _do_ the merge, but to give you information about the state of the merge
-
-## Laziness 
-
-The merge is operating in a lazy manner, if the external iterables aren't utilised, then no processing will be done internally,
-this means we may have pending state waiting for the next iteration.
-
-Internally a set of promises are held for each known iterable, including the primary iterable that was provided.
-
-These promises may produce an error, which can result in all other promises being forgotten about, which can result in an 
-uncaught error. Because of this the consumer of `merge` can pass a third argument with a callback that will be invoked
-with each promise that is utilised within the `merge` function, this allows the consumer to settle these promises as they
-see fit.
+[ 1, 5 ]
+[ 2, 6 ]
+[ 3, 7 ]
+[ 4, 8 ]
+[ 4, 9 ]
+```
 
 
