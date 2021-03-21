@@ -1,12 +1,10 @@
 import {
   QueueMicrotask,
-  defaultQueueMicrotask,
   newQueueIfExists,
   shiftingQueueMicrotask,
   resetQueueIfExists
 } from "./microtask";
 import { batchIterators } from "./batch";
-
 
 export type Lane<T> = AsyncIterator<ReadonlyArray<IteratorResult<T>>>;
 
