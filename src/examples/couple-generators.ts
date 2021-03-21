@@ -38,9 +38,7 @@ async function *secondary() {
 }
 
 async function run() {
-  for await (const slice of merge([primary(), secondary()], { queueMicrotask(fn: () => void) {
-    setTimeout(fn, 500);
-    }})) {
+  for await (const slice of merge([primary(), secondary()])) {
     console.log(slice);
   }
 }

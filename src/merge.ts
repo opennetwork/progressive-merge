@@ -1,8 +1,6 @@
-import { deferred } from "./deferred";
+import { QueueMicrotask, defaultQueueMicrotask, newQueueIfExists, shiftingQueueMicrotask } from "./microtask";
+import { batchIterators } from "./batch";
 
-export interface QueueMicrotask {
-  (callback: () => void): void;
-}
 
 export type Lane<T> = AsyncIterator<ReadonlyArray<IteratorResult<T>>>;
 
@@ -19,8 +17,8 @@ interface ResultSet<T> {
 }
 
 export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOptions<T> = {}): AsyncIterable<ReadonlyArray<T | undefined>> {
-  const microtask: QueueMicrotask = options.queueMicrotask || defaultQueueMicrotask;
-  const laneTask = microtaskIteratorResultSet(microtask, mapLanes());
+  const microtask: QueueMicrotask = options.queueMicrotask || shiftingQueueMicrotask();
+  const laneTask = batchIterators(microtask, mapLanes());
   let lanes: Lane<T>[] = [];
   let lanesDone = false;
   let valuesDone = false;
@@ -50,15 +48,15 @@ export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOpti
         }
         break;
       }
-      const results: ReadonlyArray<IteratorResult<Lane<T>>> = nextLanes.value;
-      lanes = lanes.concat(mapAndFilterResults(results));
+      const results: ReadonlyArray<Lane<T>> = nextLanes.value;
+      lanes = lanes.concat(results);
     }
   }
 
   async function nextResults(): Promise<ResultSet<ReadonlyArray<T | undefined>>> {
     const currentLanes = [...lanes];
-    if (!currentLanes.length) return { updated: false, results: [] };
     let updated = false;
+    if (!currentLanes.length) return { updated, results: [] };
     const results = await Promise.all(
       currentLanes.map(
         async (lane) => {
@@ -71,10 +69,9 @@ export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOpti
               value
             };
           }
-          const results = mapAndFilterResults<T>(laneResult.value);
           // It will always be 1 or 0 for inner lanes, see atMost passed in mapLanes
-          if (results.length === 1) {
-            value = results[0];
+          if (laneResult.value?.length === 1) {
+            value = laneResult.value[0];
             laneValues.set(lane, value);
             updated = true;
           }
@@ -93,15 +90,9 @@ export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOpti
     };
   }
 
-  function mapAndFilterResults<T>(results: ReadonlyArray<IteratorResult<T>>): T[] {
-    return results
-      .map((result): T | undefined => result.value)
-      .filter((result): result is T => !!result);
-  }
-
   async function *mapLanes() {
     for await (const lane of asAsync(iterables)) {
-      yield microtaskIteratorResultSet(microtask, asAsync(lane), 1);
+      yield batchIterators(newQueueIfExists(microtask), asAsync(lane), 1);
     }
   }
 
@@ -111,76 +102,5 @@ export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOpti
 
   function isDone() {
     return lanesDone && valuesDone;
-  }
-}
-
-export function defaultQueueMicrotask(fn: () => void): void {
-  if (typeof queueMicrotask === "function") {
-    queueMicrotask(fn);
-  } else if (typeof setImmediate === "function") {
-    setImmediate(fn);
-  } else {
-    setTimeout(fn, 0);
-  }
-}
-
-function microtaskIteratorResultSet<T>(microtask: QueueMicrotask, iterable: AsyncIterable<T>, atMost?: number): AsyncIterator<ReadonlyArray<IteratorResult<T>>> {
-  const iterator = iterable[Symbol.asyncIterator]();
-  let done = false,
-    shouldTake = -1,
-    currentPromise: Promise<IteratorResult<T>> | undefined = undefined,
-    completed: IteratorResult<T>[] = [],
-    iterationCompletion: Promise<void>;
-
-  return cycle()[Symbol.asyncIterator]();
-
-  async function *cycle() {
-    try {
-      do {
-        const { resolve: iterationComplete, promise } = deferred();
-        iterationCompletion = promise;
-        const takePromise = take(shouldTake += 1);
-        await new Promise<void>(microtask);
-        const currentComplete = [...completed];
-        completed = [];
-        iterationComplete();
-        // Yield even if empty, this allows external tasks to process empty sets
-        yield Object.freeze(currentComplete);
-        await takePromise;
-      } while (!done || completed.length);
-    } finally {
-      await iterator.return?.();
-      // This allows the promise to finalise and throw an error
-      await currentPromise;
-    }
-  }
-
-  async function take(currentShouldTake: number) {
-    while (shouldTake === currentShouldTake && !hasEnough() && !done) {
-      currentPromise = currentPromise || iterator.next().then(
-        iteratorResult => {
-          completed.push(iteratorResult);
-          if (iteratorResult.done) {
-            done = true;
-          }
-          return iteratorResult;
-        }
-      );
-      const currentPromiseResolved = await Promise.any<boolean>([
-        currentPromise.then(() => true),
-        iterationCompletion.then(() => false)
-      ]);
-      if (!currentPromiseResolved) {
-        break; // We completed our iteration
-      }
-      currentPromise = undefined;
-    }
-  }
-
-  function hasEnough() {
-    if (typeof atMost !== "number") {
-      return false;
-    }
-    return completed.length >= atMost;
   }
 }
