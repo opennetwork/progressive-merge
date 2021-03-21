@@ -1,6 +1,6 @@
 import { deferred } from "./deferred";
 
-interface QueueMicrotask {
+export interface QueueMicrotask {
   (callback: () => void): void;
 }
 
@@ -10,8 +10,8 @@ export interface MergeOptions<T> {
   queueMicrotask?: QueueMicrotask;
 }
 
-type MergeInput<T> = AsyncIterable<T> | Iterable<T>;
-type MergeLaneInput<T> = MergeInput<MergeInput<T>>;
+export type MergeInput<T> = AsyncIterable<T> | Iterable<T>;
+export type MergeLaneInput<T> = MergeInput<MergeInput<T>>;
 
 interface ResultSet<T> {
   updated: boolean;
