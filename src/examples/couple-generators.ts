@@ -5,6 +5,12 @@ async function doTask(maxInterval = 1000) {
   const taskTime = Math.round(Math.random() * maxInterval);
   console.log({ taskTime, maxInterval });
   await new Promise(resolve => setTimeout(resolve, taskTime));
+
+  throw new Error("Hey, this is an error!");
+  if (Math.random() > 0.5) {
+    throw new Error("Hey, this is an error!");
+  }
+
 }
 
 async function *doTasks(maxCount = 100, task: () => Promise<void>) {
@@ -22,7 +28,7 @@ async function *doTasks(maxCount = 100, task: () => Promise<void>) {
 }
 
 async function *primary() {
-  yield* doTasks(3, myPrimaryTask);
+  yield* doTasks(5, myPrimaryTask);
 
   async function myPrimaryTask() {
     await doTask(250);
@@ -30,7 +36,7 @@ async function *primary() {
 }
 
 async function *secondary() {
-  yield* doTasks(3, mySecondaryTask);
+  yield* doTasks(5, mySecondaryTask);
 
   async function mySecondaryTask() {
     await doTask(250);
