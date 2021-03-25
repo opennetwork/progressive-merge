@@ -1,8 +1,8 @@
 import {
   QueueMicrotask,
   newQueueIfExists,
-  shiftingQueueMicrotask,
-  resetQueueIfExists
+  resetQueueIfExists,
+  defaultQueueMicrotask
 } from "./microtask";
 import { batchIterators } from "./batch";
 
@@ -21,7 +21,7 @@ interface ResultSet<T> {
 }
 
 export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOptions<T> = {}): AsyncIterable<ReadonlyArray<T | undefined>> {
-  const microtask: QueueMicrotask = options.queueMicrotask || shiftingQueueMicrotask();
+  const microtask: QueueMicrotask = options.queueMicrotask || defaultQueueMicrotask;
   const queues: QueueMicrotask[] = [
     microtask
   ];
