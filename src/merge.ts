@@ -5,6 +5,7 @@ import {
   defaultQueueMicrotask
 } from "./microtask";
 import { batchIterators } from "./batch";
+import internal from "stream";
 
 export type Lane<T> = AsyncIterator<ReadonlyArray<IteratorResult<T>>>;
 
@@ -30,6 +31,9 @@ export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOpti
   let lanesDone = false;
   let valuesDone = false;
   const laneValues = new WeakMap<Lane<T>, T>();
+  type LanePromise = Promise<IteratorResult<ReadonlyArray<IteratorResult<T>>>>;
+  const lanePromise = new WeakMap<Lane<T>, LanePromise>();
+  const individualLanesDone = new WeakMap<Lane<T>, boolean>();
   do {
     const { updated, results } = await next();
     if (!updated) continue;
@@ -61,40 +65,90 @@ export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOpti
   }
 
   async function nextResults(): Promise<ResultSet<ReadonlyArray<T | undefined>>> {
+
+    interface LaneIteratorResult {
+      lane: Lane<T>;
+      done: boolean;
+      value?: T;
+      updated?: boolean;
+    }
+
     const currentLanes = [...lanes];
-    let updated = false;
-    if (!currentLanes.length) return { updated, results: [] };
-    const results = await Promise.all(
-      currentLanes.map(
+    if (!currentLanes.length) return { updated: false, results: [] };
+    const results: LaneIteratorResult[] = [];
+    const promises = currentLanes
+      // Don't fetch from done lanes
+      .filter(lane => !individualLanesDone.get(lane))
+      .map(
         async (lane) => {
-          const laneResult = await lane.next();
+          const laneResult = await getLaneNext(lane);
           let value: T | undefined = laneValues.get(lane);
           if (laneResult.done) {
-            return {
+            return results.push({
               lane,
               done: true,
-              value
-            };
+              value,
+            });
           }
+          const updated = laneResult.value?.length === 1;
           // It will always be 1 or 0 for inner lanes, see atMost passed in mapLanes
-          if (laneResult.value?.length === 1) {
+          if (updated) {
             value = laneResult.value[0];
-            laneValues.set(lane, value);
-            updated = true;
           }
-          return {
+          results.push({
             lane,
             done: false,
-            value
-          };
+            value,
+            updated
+          });
         }
-      )
-    );
-    valuesDone = results.every(result => result.done);
+      );
+
+    // Wait for our microtask, past this, we will wait for at least one promise to
+    // have a result, then yield our results
+    // All in flight promises will be utilised next cycle
+    await new Promise<void>(microtask);
+    await Promise.any(promises);
+
+    const partialResults = [...results];
+    const laneResults = partialResults.reduce((map, result) => {
+      return map.set(result.lane, result);
+    }, new Map<Lane<T>, LaneIteratorResult>());
+
+    const finalResults = currentLanes.map((lane): LaneIteratorResult => laneResults.get(lane) ?? { done: individualLanesDone.get(lane) ?? false, value: laneValues.get(lane), lane });
+    const finalValues = Object.freeze(finalResults.map(result => result.value));
+    const updated = !!results.find(result => result.updated);
+    valuesDone = lanesDone && finalResults.every(result => result.done);
+
+    for (const lane of laneResults.keys()) {
+      // Used up, we will reset next time it is requested
+      lanePromise.delete(lane);
+    }
+
+    for (const { value, lane } of finalResults.filter(result => result.updated)) {
+      // Set our updated values
+      laneValues.set(lane, value);
+    }
+
+    for (const { lane } of finalResults.filter(result => result.done)) {
+      individualLanesDone.set(lane, true);
+      lanePromise.delete(lane);
+    }
+
     return {
       updated,
-      results: Object.freeze(results.map(result => result.value))
+      results: finalValues
     };
+
+    function getLaneNext(lane: Lane<T>): LanePromise {
+      const previous = lanePromise.get(lane);
+      if (previous) {
+        return previous;
+      }
+      const next = lane.next();
+      lanePromise.set(lane, next);
+      return next;
+    }
   }
 
   async function *mapLanes() {
