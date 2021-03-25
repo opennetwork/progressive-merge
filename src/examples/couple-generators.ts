@@ -6,9 +6,8 @@ async function doTask(maxInterval = 1000) {
   console.log({ taskTime, maxInterval });
   await new Promise(resolve => setTimeout(resolve, taskTime));
 
-  throw new Error("Hey, this is an error!");
   if (Math.random() > 0.5) {
-    throw new Error("Hey, this is an error!");
+    // throw new Error("Hey, this is an error!");
   }
 
 }
