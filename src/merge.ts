@@ -1,171 +1,143 @@
-import {
-  QueueMicrotask,
-  newQueueIfExists,
-  resetQueueIfExists,
-  defaultQueueMicrotask
-} from "./microtask";
-import { batchIterators } from "./batch";
-import internal from "stream";
+import { asAsync, Input } from "./async";
+import { deferred } from "./deferred";
+import { defaultQueueMicrotask, QueueMicrotask } from "./microtask";
 
-export type Lane<T> = AsyncIterator<ReadonlyArray<IteratorResult<T>>>;
-
-export interface MergeOptions<T> {
+export interface MergeOptions {
   queueMicrotask?: QueueMicrotask;
 }
 
-export type MergeInput<T> = AsyncIterable<T> | Iterable<T>;
-export type MergeLaneInput<T> = MergeInput<MergeInput<T>>;
-
-interface ResultSet<T> {
-  updated: boolean;
-  results: T;
+export interface AsyncIteratorSetResult<T> {
+  done: boolean;
+  value?: T;
+  initialIteration: symbol;
+  resolvedIteration?: symbol;
+  iterator: AsyncIterator<T>;
 }
 
-export async function *merge<T>(iterables: MergeLaneInput<T>, options: MergeOptions<T> = {}): AsyncIterable<ReadonlyArray<T | undefined>> {
-  const microtask: QueueMicrotask = options.queueMicrotask || defaultQueueMicrotask;
-  const queues: QueueMicrotask[] = [
-    microtask
-  ];
-  const laneTask = batchIterators(microtask, mapLanes());
-  let lanes: Lane<T>[] = [];
+export type LaneInput<T> = Input<Input<T>>;
+
+type IterationFlag = symbol;
+
+export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}): AsyncIterable<ReadonlyArray<T | undefined>> {
+  const microtask = options.queueMicrotask || defaultQueueMicrotask;
+  const states = new Map<AsyncIterator<T>, AsyncIteratorSetResult<T>>();
+  const inFlight = new Map<AsyncIterator<T>, Promise<AsyncIteratorSetResult<T>>>();
+  const lanes: AsyncIterator<T>[] = [];
   let lanesDone = false;
   let valuesDone = false;
-  const laneValues = new WeakMap<Lane<T>, T>();
-  type LanePromise = Promise<IteratorResult<ReadonlyArray<IteratorResult<T>>>>;
-  const lanePromise = new WeakMap<Lane<T>, LanePromise>();
-  const individualLanesDone = new WeakMap<Lane<T>, boolean>();
-  do {
-    const { updated, results } = await next();
-    if (!updated) continue;
-    yield results;
-    queues.forEach(resetQueueIfExists);
-  } while (!isDone());
+  const sourceIterator = asAsync(source)[Symbol.asyncIterator]();
+  let active: IterationFlag | undefined = undefined;
+  let lanesPromise: Promise<void> = Promise.resolve();
+  let laneAvailable = deferred<AsyncIterator<T>>();
 
-  async function next() {
-    const [results] = await Promise.all([
-      nextResults(),
-      nextLanes()
-    ]);
-    return results;
+  do {
+    const iteration: IterationFlag = active = Symbol();
+
+    lanesPromise = lanesPromise.then(() => nextLanes(iteration));
+
+    if (!lanes.length) {
+      await laneAvailable.promise;
+    }
+
+    const promise = waitForResult(iteration);
+    await new Promise<void>(microtask);
+    const updated = await promise;
+
+    for (const result of updated) {
+      const { iterator } = result;
+      inFlight.set(iterator, undefined);
+      states.set(iterator, {
+        ...result,
+        value: result.done ? states.get(iterator)?.value : result.value,
+        resolvedIteration: iteration
+      });
+    }
+
+    const onlyDone = !!updated.every(result => result.done);
+
+    if (onlyDone) {
+      continue; // Skip
+    }
+
+    const finalResults = lanes.map(read);
+    valuesDone = lanesDone && finalResults.every(result => result?.done);
+
+    if (!valuesDone) {
+      // Don't yield all done because the consumer already has received all these values
+      yield Object.freeze(finalResults.map(result => result?.value));
+    }
+  } while (!valuesDone);
+
+  function read(iterator: AsyncIterator<T>): AsyncIteratorSetResult<T> | undefined {
+    return states.get(iterator);
   }
 
-  async function nextLanes() {
-    while (!lanesDone) {
-      const nextLanes = await laneTask.next();
-      if (nextLanes.done) {
+  async function nextLanes(iteration: IterationFlag) {
+    while (active === iteration) {
+      const nextLane = await sourceIterator.next();
+      if (nextLane.done) {
         lanesDone = true;
         if (!lanes.length) {
           valuesDone = true;
         }
         break;
+      } else if (nextLane.value) {
+        const lane = asAsync<T>(nextLane.value)[Symbol.asyncIterator]();
+        lanes.push(lane);
+        laneAvailable.resolve(lane);
+        laneAvailable = deferred();
       }
-      const results: ReadonlyArray<Lane<T>> = nextLanes.value;
-      lanes = lanes.concat(results);
     }
   }
 
-  async function nextResults(): Promise<ResultSet<ReadonlyArray<T | undefined>>> {
+  async function waitForResult(iteration: IterationFlag): Promise<AsyncIteratorSetResult<T>[]> {
+    // Grab onto this promise early so we don't miss one
+    const nextLane = laneAvailable.promise;
 
-    interface LaneIteratorResult {
-      lane: Lane<T>;
-      done: boolean;
-      value?: T;
-      updated?: boolean;
+    const results = await Promise.any<AsyncIteratorSetResult<T>[]>([
+      wait(),
+      nextLane.then(() => [])
+    ]);
+
+    if (iteration !== active) {
+      // Early exit if we actually aren't iterating this any more
+      // I don't think this can actually trigger, but lets keep it around
+      return [];
     }
 
-    const currentLanes = [...lanes];
-    if (!currentLanes.length) return { updated: false, results: [] };
-    const results: LaneIteratorResult[] = [];
-    const promises = currentLanes
-      // Don't fetch from done lanes
-      .filter(lane => !individualLanesDone.get(lane))
-      .map(
-        async (lane) => {
-          const laneResult = await getLaneNext(lane);
-          let value: T | undefined = laneValues.get(lane);
-          if (laneResult.done) {
-            return results.push({
-              lane,
-              done: true,
-              value,
-            });
-          }
-          const updated = laneResult.value?.length === 1;
-          // It will always be 1 or 0 for inner lanes, see atMost passed in mapLanes
-          if (updated) {
-            value = laneResult.value[0];
-          }
-          results.push({
-            lane,
-            done: false,
-            value,
-            updated
-          });
-        }
-      );
-
-    // Wait for our microtask, past this, we will wait for at least one promise to
-    // have a result, then yield our results
-    // All in flight promises will be utilised next cycle
-    await new Promise<void>(microtask);
-    await Promise.any(promises);
-
-    const partialResults = [...results];
-    const laneResults = partialResults.reduce((map, result) => {
-      return map.set(result.lane, result);
-    }, new Map<Lane<T>, LaneIteratorResult>());
-
-    const finalResults = currentLanes.map((lane): LaneIteratorResult => laneResults.get(lane) ?? { done: individualLanesDone.get(lane) ?? false, value: laneValues.get(lane), lane });
-    const finalValues = Object.freeze(finalResults.map(result => result.value));
-    const updated = !!results.find(result => result.updated);
-    valuesDone = lanesDone && finalResults.every(result => result.done);
-
-    for (const lane of laneResults.keys()) {
-      // Used up, we will reset next time it is requested
-      lanePromise.delete(lane);
+    if (!results.length) {
+      // We have a new lane available, lets loop around and initialise its promise
+      return waitForResult(iteration);
     }
 
-    for (const { value, lane } of finalResults.filter(result => result.updated)) {
-      // Set our updated values
-      laneValues.set(lane, value);
-    }
+    return results;
 
-    for (const { lane } of finalResults.filter(result => result.done)) {
-      individualLanesDone.set(lane, true);
-      lanePromise.delete(lane);
-    }
-
-    return {
-      updated,
-      results: finalValues
-    };
-
-    function getLaneNext(lane: Lane<T>): LanePromise {
-      const previous = lanePromise.get(lane);
-      if (previous) {
-        return previous;
+    async function wait(): Promise<AsyncIteratorSetResult<T>[]> {
+      const pendingLanes = lanes
+        .filter(iterator => !read(iterator)?.done);
+      if (!pendingLanes.length) {
+        await nextLane;
+        return [];
       }
-      const next = lane.next();
-      lanePromise.set(lane, next);
-      return next;
+      const promises = pendingLanes
+        .map(iterator => {
+          const current = inFlight.get(iterator);
+          if (current) return current;
+          const next = iterator.next()
+            .then((result): AsyncIteratorSetResult<T> => ({
+              value: result.value,
+              done: !!result.done,
+              initialIteration: iteration,
+              iterator
+            }));
+          inFlight.set(iterator, next);
+          return next;
+        });
+      const results: AsyncIteratorSetResult<T>[] = [];
+      promises.forEach(promise => promise.then(result => results.push(result)));
+      await Promise.any(promises);
+      // Clone so that it only uses the values we have now
+      return [...results];
     }
-  }
-
-  async function *mapLanes() {
-    for await (const lane of asAsync(iterables)) {
-      const queue = newQueueIfExists(microtask);
-      if (queue !== microtask) {
-        queues.push(queue);
-      }
-      yield batchIterators(queue, asAsync(lane), 1);
-    }
-  }
-
-  async function *asAsync<T>(iterables: MergeInput<T>): AsyncIterable<T> {
-    yield* iterables;
-  }
-
-  function isDone() {
-    return lanesDone && valuesDone;
   }
 }
