@@ -42,10 +42,7 @@ async function *secondary() {
   }
 }
 
-async function run() {
-  for await (const slice of merge([primary(), secondary()])) {
-    console.log({ slice });
-  }
+for await (const slice of merge([primary(), secondary()])) {
+  console.log({ slice });
 }
-
-await run();
+console.log("Complete");

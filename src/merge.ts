@@ -28,59 +28,73 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
   const sourceIterator = asAsync(source)[Symbol.asyncIterator]();
   let active: IterationFlag | undefined = undefined;
   let lanesPromise: Promise<void> = Promise.resolve();
-  let laneAvailable = deferred<AsyncIterator<T>>();
+  let laneAvailable = deferred<AsyncIterator<T> | undefined>();
+  const lanesComplete = deferred();
 
-  do {
-    const iteration: IterationFlag = active = Symbol();
+  try {
+    do {
+      const iteration: IterationFlag = active = Symbol();
 
-    lanesPromise = lanesPromise.then(() => nextLanes(iteration));
+      lanesPromise = lanesPromise.then(() => nextLanes(iteration));
 
-    if (!lanes.length) {
-      await laneAvailable.promise;
-    }
+      if (!lanes.length) {
+        await Promise.any<unknown>([
+          laneAvailable.promise,
+          lanesComplete.promise
+        ]);
+        if (valuesDone) {
+          // Had no lanes
+          break;
+        }
+      }
 
-    const promise = waitForResult(iteration);
-    await new Promise<void>(microtask);
-    const updated = await promise;
+      const promise = waitForResult(iteration);
+      await new Promise<void>(microtask);
+      const updated = await promise;
 
-    for (const result of updated) {
-      const { iterator } = result;
-      inFlight.set(iterator, undefined);
-      states.set(iterator, {
-        ...result,
-        value: result.done ? states.get(iterator)?.value : result.value,
-        resolvedIteration: iteration
-      });
-    }
+      for (const result of updated) {
+        const { iterator } = result;
+        inFlight.set(iterator, undefined);
+        states.set(iterator, {
+          ...result,
+          value: result.done ? states.get(iterator)?.value : result.value,
+          resolvedIteration: iteration
+        });
+      }
 
-    const onlyDone = !!updated.every(result => result.done);
+      const finalResults = lanes.map(read);
+      valuesDone = lanesDone && finalResults.every(result => result?.done);
 
-    if (onlyDone) {
-      continue; // Skip
-    }
+      const onlyDone = !!updated.every(result => result.done);
 
-    const finalResults = lanes.map(read);
-    valuesDone = lanesDone && finalResults.every(result => result?.done);
+      if (onlyDone) {
+        continue; // Skip
+      }
 
-    if (!valuesDone) {
-      // Don't yield all done because the consumer already has received all these values
-      yield Object.freeze(finalResults.map(result => result?.value));
-    }
-  } while (!valuesDone);
+      if (!valuesDone) {
+        // Don't yield all done because the consumer already has received all these values
+        yield Object.freeze(finalResults.map(result => result?.value));
+      }
+
+    } while (!valuesDone);
+  } finally {
+    await sourceIterator.return?.();
+  }
 
   function read(iterator: AsyncIterator<T>): AsyncIteratorSetResult<T> | undefined {
     return states.get(iterator);
   }
 
   async function nextLanes(iteration: IterationFlag) {
-    while (active === iteration) {
+    while (active === iteration && !lanesDone) {
       const nextLane = await sourceIterator.next();
       if (nextLane.done) {
         lanesDone = true;
         if (!lanes.length) {
           valuesDone = true;
         }
-        break;
+        lanesComplete.resolve();
+        await sourceIterator.return?.();
       } else if (nextLane.value) {
         const lane = asAsync<T>(nextLane.value)[Symbol.asyncIterator]();
         lanes.push(lane);
@@ -91,6 +105,11 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
   }
 
   async function waitForResult(iteration: IterationFlag): Promise<AsyncIteratorSetResult<T>[]> {
+    if (lanesDone && !lanes.length) {
+      // No lanes to do anything, exit
+      return [];
+    }
+
     // Grab onto this promise early so we don't miss one
     const nextLane = laneAvailable.promise;
 
@@ -134,8 +153,7 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
           return next;
         });
       const results: AsyncIteratorSetResult<T>[] = [];
-      promises.forEach(promise => promise.then(result => results.push(result)));
-      await Promise.any(promises);
+      await Promise.any(promises.map(promise => promise.then(result => results.push(result))));
       // Clone so that it only uses the values we have now
       return [...results];
     }
