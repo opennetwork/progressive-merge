@@ -7,7 +7,7 @@ async function doTask(maxInterval = 1000) {
   await new Promise(resolve => setTimeout(resolve, taskTime));
 
   if (Math.random() > 0.5) {
-    // throw new Error("Hey, this is an error!");
+    throw new Error("Hey, this is an error!");
   }
 
 }
@@ -42,7 +42,12 @@ async function *secondary() {
   }
 }
 
-for await (const slice of merge([primary(), secondary()])) {
-  console.log({ slice });
+try {
+
+  for await (const slice of merge([primary(), secondary()])) {
+    console.log({ slice });
+  }
+  console.log("Complete");
+} catch (error) {
+  console.error({ error });
 }
-console.log("Complete");

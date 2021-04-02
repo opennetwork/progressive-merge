@@ -21,7 +21,7 @@ type IterationFlag = symbol;
 export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}): AsyncIterable<ReadonlyArray<T | undefined>> {
   const microtask = options.queueMicrotask || defaultQueueMicrotask;
   const states = new Map<AsyncIterator<T>, AsyncIteratorSetResult<T>>();
-  const inFlight = new Map<AsyncIterator<T>, Promise<AsyncIteratorSetResult<T>>>();
+  const inFlight = new Map<AsyncIterator<T>, Promise<AsyncIteratorSetResult<T> | undefined>>();
   const lanes: AsyncIterator<T>[] = [];
   let lanesDone = false;
   let valuesDone = false;
@@ -30,6 +30,7 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
   let lanesPromise: Promise<void> = Promise.resolve();
   let laneAvailable = deferred<AsyncIterator<T> | undefined>();
   const lanesComplete = deferred();
+  const errors: unknown[] = [];
 
   try {
     do {
@@ -51,6 +52,13 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       const promise = waitForResult(iteration);
       await new Promise<void>(microtask);
       const updated = await promise;
+
+      if (errors.length === 1) {
+        return Promise.reject(errors[0]);
+      } else if (errors.length) {
+        // TODO flatten other AggregateErrors into this
+        return Promise.reject(new AggregateError(errors));
+      }
 
       for (const result of updated) {
         const { iterator } = result;
@@ -110,6 +118,11 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       return [];
     }
 
+    if (errors.length) {
+      // We have a problem, exit
+      return [];
+    }
+
     // Grab onto this promise early so we don't miss one
     const nextLane = laneAvailable.promise;
 
@@ -148,12 +161,20 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
               done: !!result.done,
               initialIteration: iteration,
               iterator
-            }));
+            }))
+            .catch(localError => {
+              errors.push(localError);
+              return undefined;
+            });
           inFlight.set(iterator, next);
           return next;
         });
       const results: AsyncIteratorSetResult<T>[] = [];
-      await Promise.any(promises.map(promise => promise.then(result => results.push(result))));
+      await Promise.any(promises.map(promise => promise.then(result => {
+        if (result) {
+          results.push(result);
+        }
+      })));
       // Clone so that it only uses the values we have now
       return [...results];
     }
