@@ -18,7 +18,7 @@ export type LaneInput<T> = Input<Input<T>>;
 
 type IterationFlag = symbol;
 
-export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}): AsyncIterable<ReadonlyArray<T | undefined>> {
+export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}): AsyncIterable<(T | undefined)[]> {
   const microtask = options.queueMicrotask || defaultQueueMicrotask;
   const states = new Map<AsyncIterator<T>, AsyncIteratorSetResult<T>>();
   const inFlight = new Map<AsyncIterator<T>, Promise<AsyncIteratorSetResult<T> | undefined>>();
@@ -49,8 +49,7 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
         }
       }
 
-      const promise = waitForResult(iteration);
-      const updated = await promise;
+      const updated = await waitForResult(iteration);
 
       if (errors.length) {
         break;
@@ -71,13 +70,13 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
 
       const onlyDone = !!updated.every(result => result.done);
 
+      // Don't yield only done because the consumer already has received all these values
       if (onlyDone) {
-        continue; // Skip
+        continue;
       }
 
       if (!valuesDone) {
-        // Don't yield all done because the consumer already has received all these values
-        yield Object.freeze(finalResults.map(result => result?.value));
+        yield finalResults.map(result => result?.value);
       }
 
     } while (!valuesDone);
@@ -150,12 +149,6 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       wait(),
       nextLane.then(() => [])
     ]);
-
-    if (iteration !== active) {
-      // Early exit if we actually aren't iterating this any more
-      // I don't think this can actually trigger, but lets keep it around
-      return [];
-    }
 
     if (!results.length) {
       // We have a new lane available, lets loop around and initialise its promise
