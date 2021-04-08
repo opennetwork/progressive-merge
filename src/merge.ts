@@ -1,6 +1,7 @@
 import { asAsync, Input } from "./async";
 import { deferred } from "./deferred";
 import { defaultQueueMicrotask, QueueMicrotask } from "./microtask";
+import { aggregateError } from "./aggregate-error";
 
 export interface MergeOptions {
   queueMicrotask?: QueueMicrotask;
@@ -86,11 +87,8 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
     await sourceIterator.return?.();
   }
 
-  if (errors.length === 1) {
-    throw errors[0];
-  } else if (errors.length) {
-    // TODO flatten other AggregateErrors into this
-    throw new AggregateError(errors);
+  if (errors.length) {
+    throw aggregateError(errors);
   }
 
   function read(iterator: AsyncIterator<T>): AsyncIteratorSetResult<T> | undefined {
