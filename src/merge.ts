@@ -165,9 +165,15 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
     return results;
 
     async function wait(): Promise<AsyncIteratorSetResult<T>[]> {
+      let active = true;
       const results: AsyncIteratorSetResult<T>[] = [];
       const promises = pendingLanes
-        .map(iterator => next(iterator).then(result => results.push(result)));
+        .map(iterator => next(iterator).then(result => {
+          // What happens if we dont check this? Does this array keep adding if we have a lot of iterators?
+          if (active) {
+            results.push(result);
+          }
+        }));
       await Promise.any<unknown>([
         new Promise<void>(microtask),
         Promise.all(promises)
@@ -175,6 +181,7 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       if (!results.length) {
         await Promise.any(promises);
       }
+      active = false;
       // Clone so that it only uses the values we have now
       return [...results];
     }
