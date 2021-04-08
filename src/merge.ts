@@ -50,14 +50,10 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       }
 
       const promise = waitForResult(iteration);
-      await new Promise<void>(microtask);
       const updated = await promise;
 
-      if (errors.length === 1) {
-        return Promise.reject(errors[0]);
-      } else if (errors.length) {
-        // TODO flatten other AggregateErrors into this
-        return Promise.reject(new AggregateError(errors));
+      if (errors.length) {
+        break;
       }
 
       for (const result of updated) {
@@ -85,8 +81,17 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       }
 
     } while (!valuesDone);
+  } catch (error) {
+    errors.push(error);
   } finally {
     await sourceIterator.return?.();
+  }
+
+  if (errors.length === 1) {
+    throw errors[0];
+  } else if (errors.length) {
+    // TODO flatten other AggregateErrors into this
+    throw new AggregateError(errors);
   }
 
   function read(iterator: AsyncIterator<T>): AsyncIteratorSetResult<T> | undefined {
@@ -113,6 +118,13 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
   }
 
   async function waitForResult(iteration: IterationFlag): Promise<AsyncIteratorSetResult<T>[]> {
+
+    if (iteration !== active) {
+      // Early exit if we actually aren't iterating this any more
+      // I don't think this can actually trigger, but lets keep it around
+      return [];
+    }
+
     if (lanesDone && !lanes.length) {
       // No lanes to do anything, exit
       return [];
@@ -123,8 +135,16 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       return [];
     }
 
+    const pendingLanes = lanes
+      .filter(iterator => !read(iterator)?.done);
+
     // Grab onto this promise early so we don't miss one
     const nextLane = laneAvailable.promise;
+
+    if (!pendingLanes.length) {
+      await nextLane;
+      return waitForResult(iteration);
+    }
 
     const results = await Promise.any<AsyncIteratorSetResult<T>[]>([
       wait(),
@@ -145,38 +165,36 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
     return results;
 
     async function wait(): Promise<AsyncIteratorSetResult<T>[]> {
-      const pendingLanes = lanes
-        .filter(iterator => !read(iterator)?.done);
-      if (!pendingLanes.length) {
-        await nextLane;
-        return [];
-      }
-      const promises = pendingLanes
-        .map(iterator => {
-          const current = inFlight.get(iterator);
-          if (current) return current;
-          const next = iterator.next()
-            .then((result): AsyncIteratorSetResult<T> => ({
-              value: result.value,
-              done: !!result.done,
-              initialIteration: iteration,
-              iterator
-            }))
-            .catch(localError => {
-              errors.push(localError);
-              return undefined;
-            });
-          inFlight.set(iterator, next);
-          return next;
-        });
       const results: AsyncIteratorSetResult<T>[] = [];
-      await Promise.any(promises.map(promise => promise.then(result => {
-        if (result) {
-          results.push(result);
-        }
-      })));
+      const promises = pendingLanes
+        .map(iterator => next(iterator).then(result => results.push(result)));
+      await Promise.any<unknown>([
+        new Promise<void>(microtask),
+        Promise.all(promises)
+      ]);
+      if (!results.length) {
+        await Promise.any(promises);
+      }
       // Clone so that it only uses the values we have now
       return [...results];
+    }
+
+    async function next(iterator: AsyncIterator<T>) {
+      const current = inFlight.get(iterator);
+      if (current) return current;
+      const next = iterator.next()
+        .then((result): AsyncIteratorSetResult<T> => ({
+          value: result.value,
+          done: !!result.done,
+          initialIteration: iteration,
+          iterator
+        }))
+        .catch(localError => {
+          errors.push(localError);
+          return undefined;
+        });
+      inFlight.set(iterator, next);
+      return next;
     }
   }
 }
