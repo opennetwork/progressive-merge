@@ -6,14 +6,15 @@ async function doTask(maxInterval = 1000) {
   console.log({ taskTime, maxInterval });
   await new Promise(resolve => setTimeout(resolve, taskTime));
 
-  if (Math.random() > 0.5) {
-    throw new Error("Hey, this is an error!");
-  }
+  // if (Math.random() > 0.5) {
+  //   throw new Error("Hey, this is an error!");
+  // }
 
 }
 
 async function *doTasks(maxCount = 100, task: () => Promise<void>) {
   let tasksRemaining = 1 + Math.floor(Math.random() * maxCount);
+  console.log("Tasks", tasksRemaining);
   do {
     tasksRemaining -= 1;
     const start = Date.now();

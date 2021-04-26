@@ -13,11 +13,14 @@ export interface AsyncIteratorSetResult<T> {
   initialIteration: symbol;
   resolvedIteration?: symbol;
   iterator: AsyncIterator<T>;
+  promise?: unknown;
 }
 
 export type LaneInput<T> = Input<Input<T>>;
 
 type IterationFlag = symbol;
+
+const NextMicrotask = Symbol();
 
 export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}): AsyncIterable<(T | undefined)[]> {
   const microtask = options.queueMicrotask || defaultQueueMicrotask;
@@ -31,10 +34,13 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
   let lanesPromise: Promise<void> = Promise.resolve();
   let laneAvailable = deferred<AsyncIterator<T> | undefined>();
   const lanesComplete = deferred();
+  const errorOccurred = deferred();
   const errors: unknown[] = [];
+  let results: AsyncIteratorSetResult<T>[] = [];
+  let currentMicrotaskPromise: Promise<unknown> | undefined;
 
   try {
-    do {
+    cycle: do {
       const iteration: IterationFlag = active = Symbol();
 
       lanesPromise = lanesPromise.then(() => nextLanes(iteration));
@@ -57,7 +63,12 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       }
 
       for (const result of updated) {
-        const { iterator } = result;
+        const { iterator, promise } = result;
+        const currentPromise: unknown = inFlight.get(iterator);
+        if (promise !== currentPromise) {
+          onError(new Error("Unexpected promise state"));
+          break cycle;
+        }
         inFlight.set(iterator, undefined);
         states.set(iterator, {
           ...result,
@@ -67,6 +78,7 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       }
 
       const finalResults = lanes.map(read);
+
       valuesDone = lanesDone && finalResults.every(result => result?.done);
 
       const onlyDone = !!updated.every(result => result.done);
@@ -82,8 +94,9 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
 
     } while (!valuesDone);
   } catch (error) {
-    errors.push(error);
+    onError(error);
   } finally {
+    active = undefined;
     await sourceIterator.return?.();
   }
 
@@ -114,8 +127,7 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
     }
   }
 
-  async function waitForResult(iteration: IterationFlag): Promise<AsyncIteratorSetResult<T>[]> {
-
+  async function waitForResult(iteration: IterationFlag, emptyDepth: number = 0): Promise<AsyncIteratorSetResult<T>[]> {
     if (iteration !== active) {
       // Early exit if we actually aren't iterating this any more
       // I don't think this can actually trigger, but lets keep it around
@@ -143,38 +155,55 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       return waitForResult(iteration);
     }
 
-    const results = await Promise.any<AsyncIteratorSetResult<T>[]>([
-      wait(),
-      nextLane.then(() => [])
-    ]);
+    const currentResults = await wait();
 
-    if (!results.length) {
+    if (!currentResults.length) {
+      if (emptyDepth > 10000) {
+        throw new Error("Empty depth over 10000");
+      }
       // We have a new lane available, lets loop around and initialise its promise
-      return waitForResult(iteration);
+      return waitForResult(iteration, emptyDepth + 1);
     }
 
-    return results;
+    return currentResults;
 
     async function wait(): Promise<AsyncIteratorSetResult<T>[]> {
-      let active = true;
-      const results: AsyncIteratorSetResult<T>[] = [];
-      const promises = pendingLanes
-        .map(iterator => next(iterator).then(result => {
-          // What happens if we dont check this? Does this array keep adding if we have a lot of iterators?
-          if (active) {
-            results.push(result);
-          }
-        }));
-      await Promise.any<unknown>([
-        new Promise<void>(microtask),
-        Promise.all(promises)
+      const promises = pendingLanes.map(next);
+      const nextLane = laneAvailable.promise;
+
+      currentMicrotaskPromise = currentMicrotaskPromise || new Promise<void>(microtask).then(() => NextMicrotask);
+
+      const reason = await Promise.any<unknown>([
+        currentMicrotaskPromise,
+        Promise.all(promises),
+        errorOccurred.promise,
+        // We will be able to set up again next loop
+        nextLane
       ]);
-      if (!results.length) {
-        await Promise.any(promises);
+
+      if (reason === NextMicrotask) {
+        currentMicrotaskPromise = undefined;
       }
-      active = false;
+
+      if (!results.length) {
+        await Promise.any<unknown>([
+          Promise.any(promises),
+          nextLane,
+          errorOccurred.promise
+        ]);
+      }
+
+      if (errors.length) {
+        return [];
+      }
+      if (!results.length) {
+        return [];
+      }
       // Clone so that it only uses the values we have now
-      return [...results];
+      const cloned = [...results];
+      // Clear to start again
+      results = [];
+      return cloned;
     }
 
     async function next(iterator: AsyncIterator<T>) {
@@ -182,17 +211,33 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       if (current) return current;
       const next = iterator.next()
         .then((result): AsyncIteratorSetResult<T> => ({
-          value: result.value,
-          done: !!result.done,
-          initialIteration: iteration,
-          iterator
+            value: result.value,
+            done: !!result.done,
+            initialIteration: iteration,
+            iterator,
+            promise: next
         }))
-        .catch(localError => {
-          errors.push(localError);
-          return undefined;
+        .catch((localError): AsyncIteratorSetResult<T> => {
+          onError(localError);
+          return {
+            value: undefined,
+            done: true,
+            initialIteration: iteration,
+            iterator,
+            promise: next
+          };
+        })
+        .then((result) => {
+          results.push(result);
+          return result;
         });
       inFlight.set(iterator, next);
       return next;
     }
+  }
+
+  function onError(error: unknown) {
+    errors.push(error);
+    errorOccurred.resolve();
   }
 }
