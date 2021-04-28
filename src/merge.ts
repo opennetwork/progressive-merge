@@ -2,6 +2,7 @@ import { asAsync, Input } from "./async";
 import { deferred } from "./deferred";
 import { defaultQueueMicrotask, QueueMicrotask } from "./microtask";
 import { aggregateError } from "./aggregate-error";
+import { isReuse } from "./reuse";
 
 export interface MergeOptions {
   queueMicrotask?: QueueMicrotask;
@@ -123,7 +124,7 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
       } else if (result.value) {
         const sourceLane = result.value;
         const lane = getIterator(sourceLane);
-        if (options.reuseInFlight) {
+        if (options.reuseInFlight || isReuse(sourceLane)) {
           iterators.set(sourceLane, lane);
         }
         lanes.push(lane);
@@ -133,7 +134,7 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
     }
 
     function getIterator(sourceLane: Input<T>) {
-      if (options.reuseInFlight) {
+      if (options.reuseInFlight || isReuse(sourceLane)) {
         const currentIterator = iterators.get(sourceLane);
         if (currentIterator) {
           const state = read(currentIterator);

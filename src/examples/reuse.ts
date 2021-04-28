@@ -1,4 +1,5 @@
 import { merge } from "../merge";
+import { setReuse } from "../reuse";
 
 async function* generatorOne() {
   let remaining = 10;
@@ -19,17 +20,32 @@ async function* generatorTwo() {
 }
 
 async function run() {
-  const one = generatorOne();
-  const two = generatorTwo();
+  const basicOne = generatorOne();
+  const basicTwo = generatorTwo();
   for await (const result of merge([
-    one,
-    one,
-    two,
-    one,
-    one,
-    one,
-    two
+    basicOne,
+    basicOne,
+    basicTwo,
+    basicOne,
+    basicOne,
+    basicOne,
+    basicTwo
   ], { reuseInFlight: true })) {
+    console.log(result.join(","));
+  }
+  const brandedOne = generatorOne();
+  setReuse(brandedOne);
+  const brandedTwo = generatorTwo();
+  setReuse(brandedTwo);
+  for await (const result of merge([
+    brandedOne,
+    brandedOne,
+    brandedTwo,
+    brandedOne,
+    brandedOne,
+    brandedOne,
+    brandedTwo
+  ])) {
     console.log(result.join(","));
   }
 }
