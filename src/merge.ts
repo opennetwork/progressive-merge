@@ -5,6 +5,7 @@ import { aggregateError } from "./aggregate-error";
 
 export interface MergeOptions {
   queueMicrotask?: QueueMicrotask;
+  reuseInFlight?: boolean;
 }
 
 export interface AsyncIteratorSetResult<T> {
@@ -26,10 +27,11 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
   const microtask = options.queueMicrotask || defaultQueueMicrotask;
   const states = new Map<AsyncIterator<T>, AsyncIteratorSetResult<T>>();
   const inFlight = new Map<AsyncIterator<T>, Promise<AsyncIteratorSetResult<T> | undefined>>();
+  const iterators = new WeakMap<Input<T>, AsyncIterator<T>>();
   const lanes: AsyncIterator<T>[] = [];
   let lanesDone = false;
   let valuesDone = false;
-  const sourceIterator = asAsync(source)[Symbol.asyncIterator]();
+  const sourceIterator: AsyncIterator<Input<T>> = asAsync(source)[Symbol.asyncIterator]();
   let active: IterationFlag | undefined = undefined;
   let lanesPromise: Promise<void> = Promise.resolve();
   let laneAvailable = deferred<AsyncIterator<T> | undefined>();
@@ -110,20 +112,42 @@ export async function *merge<T>(source: LaneInput<T>, options: MergeOptions = {}
 
   async function nextLanes(iteration: IterationFlag) {
     while (active === iteration && !lanesDone) {
-      const nextLane = await sourceIterator.next();
-      if (nextLane.done) {
+      const result: IteratorResult<Input<T>> = await sourceIterator.next();
+      if (!isIteratorYieldResult(result)) {
         lanesDone = true;
         if (!lanes.length) {
           valuesDone = true;
         }
         lanesComplete.resolve();
         await sourceIterator.return?.();
-      } else if (nextLane.value) {
-        const lane = asAsync<T>(nextLane.value)[Symbol.asyncIterator]();
+      } else if (result.value) {
+        const sourceLane = result.value;
+        const lane = getIterator(sourceLane);
+        if (options.reuseInFlight) {
+          iterators.set(sourceLane, lane);
+        }
         lanes.push(lane);
         laneAvailable.resolve(lane);
         laneAvailable = deferred();
       }
+    }
+
+    function getIterator(sourceLane: Input<T>) {
+      if (options.reuseInFlight) {
+        const currentIterator = iterators.get(sourceLane);
+        if (currentIterator) {
+          const state = read(currentIterator);
+          if (state?.done !== true) {
+            // reuse
+            return currentIterator;
+          }
+        }
+      }
+      return asAsync<T>(sourceLane)[Symbol.asyncIterator]();
+    }
+
+    function isIteratorYieldResult<T>(result: IteratorResult<T>): result is IteratorYieldResult<T> {
+      return !result.done;
     }
   }
 
